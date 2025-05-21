@@ -6,3 +6,14 @@ edition = "2024"
 [dependencies]
 actix-web = "4.10.2"
 regex = "1.11.1"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = [
+    "registry",
+    "fmt",
+    "env-filter",
+] }
+tracing-loki = "0.2.6"
+url = "2.5.4"
+anyhow = "1.0.98"
+tokio = "1.45.0"
+time = "0.3.41"
