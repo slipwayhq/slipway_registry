@@ -1,43 +1,33 @@
-use actix_web::{App, HttpServer};
-use once_cell::sync::Lazy;
-use prometheus::{CounterVec, Opts, Registry};
-use time::{OffsetDateTime, format_description};
-use tracing::{Level, debug, info};
-use tracing_subscriber::{FmtSubscriber, fmt::time::FormatTime};
+use actix_web::{App, HttpResponse, HttpServer, Responder, get, http::header, web::Path};
+use regex::Regex;
 
-mod components;
-mod metrics;
-
-// Static metrics registry
-pub static REGISTRY: Lazy<Registry> = Lazy::new(|| {
-    debug!("Initializing metrics registry");
-    Registry::new()
+pub(crate) static REGISTRY_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r"^(?<publisher>\w+)\.(?<name>\w+)\.(?<version>.+)$").unwrap()
 });
 
-pub static DOWNLOAD_COUNTER: Lazy<CounterVec> = Lazy::new(|| {
-    debug!("Initializing download counter");
-    let c = CounterVec::new(
-        Opts::new("component_downloads", "Count of component downloads"),
-        &["publisher", "name", "version"],
-    )
-    .unwrap();
-    REGISTRY.register(Box::new(c.clone())).unwrap();
-    c
-});
+#[get("/components/{reference}.tar")]
+async fn redirect_to_github(filename: Path<String>) -> impl Responder {
+    let Some(caps) = REGISTRY_REGEX.captures(&filename) else {
+        return HttpResponse::BadRequest()
+            .body("Invalid filename format. Expected format: <publisher>.<name>.<version>.tar");
+    };
 
-pub static DOWNLOAD_ERRORS: Lazy<CounterVec> = Lazy::new(|| {
-    debug!("Initializing download errors counter");
-    let c = CounterVec::new(
-        Opts::new(
-            "component_download_errors",
-            "Invalid or failed download requests",
-        ),
-        &["reason"],
-    )
-    .unwrap();
-    REGISTRY.register(Box::new(c.clone())).unwrap();
-    c
-});
+    let publisher = &caps["publisher"];
+    let name = &caps["name"];
+    let version = &caps["version"];
+
+    let publisher_hyphenated = publisher.replace('_', "-");
+
+    let target = format!(
+        "https://github.com/{publisher_hyphenated}/slipway_{name}/releases/download/{version}/{publisher}.{name}.{version}.tar",
+    );
+
+    println!("Redirecting \"{publisher}.{name}.{version}\" to: {target}");
+
+    HttpResponse::Found()
+        .insert_header((header::LOCATION, target))
+        .finish()
+}
 
 // Configure and return the app for testing and production use
 pub fn configure_app() -> App<
@@ -49,56 +39,21 @@ pub fn configure_app() -> App<
         InitError = (),
     >,
 > {
-    App::new()
-        .service(components::redirect_to_github)
-        .service(metrics::metrics)
+    App::new().service(redirect_to_github)
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    configure_tracing(Some("debug".to_string()));
-    info!("Tracing configured.");
     HttpServer::new(|| configure_app())
         .bind(("0.0.0.0", 8080))?
         .run()
         .await
 }
 
-struct CustomTimer;
-
-impl FormatTime for CustomTimer {
-    fn format_time(&self, w: &mut tracing_subscriber::fmt::format::Writer<'_>) -> std::fmt::Result {
-        let now = OffsetDateTime::now_utc();
-        let format = format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]")
-            .expect("Timestamp format should be valid");
-        write!(w, "{}", now.format(&format).unwrap())
-    }
-}
-
-fn configure_tracing(log_level: Option<String>) {
-    let log_level = match log_level.map(|level| level.to_lowercase()).as_deref() {
-        Some("error") => Level::ERROR,
-        Some("warn") => Level::WARN,
-        Some("info") => Level::INFO,
-        Some("debug") => Level::DEBUG,
-        Some("trace") => Level::TRACE,
-        Some(_) => panic!("invalid log level. must be one of [error, warn, info, debug, trace]."),
-        _ => Level::INFO,
-    };
-
-    let subscriber = FmtSubscriber::builder()
-        .with_target(false)
-        .with_timer(CustomTimer)
-        .with_max_level(log_level)
-        .finish();
-
-    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use actix_web::{http::header, test};
+    use actix_web::test;
 
     #[actix_web::test]
     async fn test_redirect_valid_reference() {
