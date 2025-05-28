@@ -39,10 +39,15 @@ async fn redirect_to_github(filename: Path<String>) -> impl Responder {
     let name = &caps["name"];
     let version = &caps["version"];
 
+    let (namespace, _localname) = match name.split_once("__") {
+        Some((ns, l)) => (ns, l),
+        None => (name, name),
+    };
+
     let publisher_hyphenated = publisher.replace('_', "-");
 
     let target = format!(
-        "https://github.com/{publisher_hyphenated}/slipway_{name}/releases/download/{version}/{publisher}.{name}.{version}.tar",
+        "https://github.com/{publisher_hyphenated}/slipway_{namespace}/releases/download/{version}/{publisher}.{name}.{version}.tar",
     );
 
     info!(
@@ -167,6 +172,29 @@ mod tests {
         assert_eq!(
             location,
             "https://github.com/test-publisher/slipway_component/releases/download/1.0.0/test_publisher.component.1.0.0.tar"
+        );
+    }
+
+    #[actix_web::test]
+    async fn test_redirect_valid_reference_with_namespace() {
+        let app = test::init_service(configure_app()).await;
+        let req = test::TestRequest::get()
+            .uri("/components/test_publisher.component__sub_component.1.0.0.tar")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+
+        assert_eq!(resp.status(), 302);
+
+        let location = resp
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+
+        assert_eq!(
+            location,
+            "https://github.com/test-publisher/slipway_component/releases/download/1.0.0/test_publisher.component__sub_component.1.0.0.tar"
         );
     }
 
